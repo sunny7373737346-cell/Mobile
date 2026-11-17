@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">PhoneMirrorControl</string>
+    <string name="accessibility_description">Enables remote touch, swipe, and navigation control when screen mirroring is active.</string>
+</resources>

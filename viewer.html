@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>PhoneMirrorControl — Web Viewer</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, -apple-system, sans-serif;
+      background: #0f172a; color: #f8fafc;
+      display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+    }
+    .bar {
+      display: flex; gap: 6px; padding: 8px; background: #1e293b;
+      align-items: center; flex-wrap: wrap;
+    }
+    input[type="text"], input:not([type]) {
+      background: #0f172a; color: #fff; border: 1px solid #334155;
+      padding: 6px 10px; border-radius: 6px; font-size: 13px;
+    }
+    button {
+      background: #2563eb; color: #fff; border: none; padding: 7px 10px;
+      border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 12px;
+    }
+    button.sec { background: #334155; }
+    label.toggle {
+      display: flex; align-items: center; gap: 4px; font-size: 12px; color: #38bdf8;
+    }
+    .stage {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      position: relative; overflow: hidden; touch-action: none;
+    }
+    #screen {
+      max-width: 100%; max-height: 100%; object-fit: contain;
+      user-select: none; -webkit-user-drag: none; touch-action: none;
+    }
+    .nav {
+      display: flex; gap: 6px; padding: 8px; overflow-x: auto;
+      background: #1e293b; border-top: 1px solid #334155;
+    }
+    #status { font-size: 12px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <input id="wsUrl" value="ws://localhost:8080" style="flex:1;min-width:130px" />
+    <input id="room" placeholder="Room Code" style="width:90px" />
+    <button onclick="connect()">Connect</button>
+    <label class="toggle"><input type="checkbox" id="touchToggle" checked /> Touch Screen</label>
+    <span id="status">Disconnected</span>
+  </div>
+  <div class="stage">
+    <img id="screen" alt="Remote screen will appear here" />
+  </div>
+  <div class="bar">
+    <input id="remoteText" placeholder="Send text to phone..." style="flex:1" />
+    <button onclick="sendText()">Send Text</button>
+  </div>
+  <div class="nav">
+    <button class="sec" onclick="sendAction('back')">Back</button>
+    <button class="sec" onclick="sendAction('home')">Home</button>
+    <button class="sec" onclick="sendAction('recents')">Recents</button>
+    <button class="sec" onclick="sendAction('notifications')">Notif</button>
+    <button class="sec" onclick="sendAction('quick_settings')">Settings</button>
+    <button class="sec" onclick="sendAction('vol_up')">Vol+</button>
+    <button class="sec" onclick="sendAction('vol_down')">Vol-</button>
+    <button class="sec" onclick="sendAction('lock')">Lock</button>
+  </div>
+  <script>
+    let ws = null;
+    let startPos = null;
+    let downTime = 0;
+    const img = document.getElementById("screen");
+    const statusEl = document.getElementById("status");
+    const touchToggle = document.getElementById("touchToggle");
+
+    function connect() {
+      const url = document.getElementById("wsUrl").value.trim();
+      const room = document.getElementById("room").value.trim();
+      if (!url || !room) return alert("Server URL और Room Code डालें");
+      if (ws) ws.close();
+      ws = new WebSocket(url);
+      ws.binaryType = "blob";
+      ws.onopen = () => {
+        statusEl.textContent = "Connected";
+        ws.send(JSON.stringify({ type: "join", role: "viewer", room }));
+      };
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof Blob) {
+          const oldUrl = img.src;
+          img.src = URL.createObjectURL(ev.data);
+          if (oldUrl.startsWith("blob:")) URL.revokeObjectURL(oldUrl);
+        }
+      };
+      ws.onclose = () => { statusEl.textContent = "Disconnected"; };
+    }
+
+    function getNormCoords(clientX, clientY) {
+      const rect = img.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const x = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      const y = Math.min(1, Math.max(0, (clientY - rect.top) / rect.height));
+      return { x, y };
+    }
+
+    img.addEventListener("pointerdown", (e) => {
+      if (!touchToggle.checked) return;
+      startPos = getNormCoords(e.clientX, e.clientY);
+      downTime = Date.now();
+    });
+
+    img.addEventListener("pointerup", (e) => {
+      if (!touchToggle.checked || !startPos || !ws || ws.readyState !== 1) return;
+      const endPos = getNormCoords(e.clientX, e.clientY);
+      if (!endPos) return;
+      const elapsed = Date.now() - downTime;
+      const dx = endPos.x - startPos.x;
+      const dy = endPos.y - startPos.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.02) {
+        const type = elapsed >= 500 ? "long_press" : "tap";
+        ws.send(JSON.stringify({ type, x: endPos.x, y: endPos.y }));
+      } else {
+        const duration = Math.min(1000, Math.max(120, elapsed));
+        ws.send(JSON.stringify({
+          type: "swipe",
+          startX: startPos.x, startY: startPos.y,
+          endX: endPos.x, endY: endPos.y,
+          duration
+        }));
+      }
+      startPos = null;
+    });
+
+    function sendAction(action) {
+      if (touchToggle.checked && ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "action", action }));
+      }
+    }
+
+    function sendText() {
+      const input = document.getElementById("remoteText");
+      if (touchToggle.checked && ws && ws.readyState === 1 && input.value) {
+        ws.send(JSON.stringify({ type: "text", text: input.value }));
+        input.value = "";
+      }
+    }
+  </script>
+</body>
+</html>
